@@ -91,7 +91,7 @@ NOT_PCT = [
     ("sgx_reit_performance_final", "interest_coverage_ratio", 0.5, 60),
     ("sgx_reit_performance_final", "weighted_average_lease_expiry", 0.1, 60),
     ("sgx_reit_performance_final", "weighted_average_debt_maturity", 0.1, 30),
-    ("sgx_reit_performance_final", "distribution_per_unit", 0, 200),      # cents
+    ("sgx_reit_performance_final", "distribution_per_unit", 0, 2),        # SGD dollars
     ("sgx_reit_performance_final", "net_asset_value_per_unit", 0, 50),    # dollars
 ]
 

@@ -161,6 +161,10 @@ for r in cur.fetchall():
     (sym,fy,date,src,ccy,ploc,nuh,uii,utbi,drec,dpm,lev,icr,cod,wadm,wale,occ,dpu,nav,
      pv,gr,npi,ify,ddec,dio,dpaid,dic,retained,addns)=r
     def cv(v): return to_sgd(v, ccy, date, f'perf.{sym}')
+    # raw DPU is cents as reported; _final and prod hold SGD dollars, the same unit as NAV
+    def cents_to_sgd(v):
+        s = cv(v)
+        return None if s is None else round(s / 100, 8)
     def cv_record(rec):
         # distribution_record was passed through UNCONVERTED while distribution_per_unit
         # was converted, so in _final a foreign reporter's tranches and its headline sat
@@ -177,7 +181,7 @@ for r in cur.fetchall():
         #   pay_date  19% filled
         # RAW keeps every key.
         if rec is None: return None
-        return [{'dpu': cv(t['dpu']) if t.get('dpu') is not None else None,
+        return [{'dpu': cents_to_sgd(t['dpu']) if t.get('dpu') is not None else None,
                  'period_start': t.get('period_start'),
                  'period_end':   t.get('period_end')} for t in rec]
     prows.append((sym,fy,date,src,normalize_locations(ploc),nuh,
@@ -187,7 +191,7 @@ for r in cur.fetchall():
       pct01(lev), float(icr) if icr is not None else None,   # icr is a MULTIPLE, not a percent
       pct01(cod), float(wadm) if wadm is not None else None,
       float(wale) if wale is not None else None, pct01(occ),
-      cv(dpu), cv(nav), cv(pv), cv(gr), cv(npi), cv(ify), cv(ddec), cv(dio), cv(dpaid), cv(dic),
+      cents_to_sgd(dpu), cv(nav), cv(pv), cv(gr), cv(npi), cv(ify), cv(ddec), cv(dio), cv(dpaid), cv(dic),
       cv(retained), cv(addns)))
 ddl_drop_create('sgx_reit_performance_final',
   'symbol text, financial_year smallint, date date, source_url text, properties_location text, number_of_unitholders int, '
