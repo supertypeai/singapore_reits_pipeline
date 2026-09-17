@@ -471,6 +471,37 @@ def check_segment_consistency(cur):
             ok(g, t, "segment tagging consistent across years")
 
 
+def check_property_money(cur):
+    """Property money in _final must be SGD. H1 compares a property's purchase price with its
+    own valuation: both are S$ figures for the same asset, so they sit within a few times of
+    each other. A price left in a large-unit currency (JPY, IDR, KRW, VND, INR, CNY) is 5-12,000x
+    off. Revenue is not used: new acquisitions and vacant buildings have near-zero revenue.
+    An unconverted EUR/GBP/USD/AUD figure is only 1.3-1.8x off and cannot be seen here; the
+    purchase_price_currency tag audit covers those. H2 catches a year-on-year jump that only a
+    unit or FX error explains."""
+    g = "property_money"
+    rows = q(cur, """select symbol, financial_year, property_name, market_valuation, purchase_price
+                     from sgx_reit_property_final
+                     where market_valuation > 0 and purchase_price > 0""")
+    bad = [(s, fy, pn, round(float(pp) / float(mv), 1)) for s, fy, pn, mv, pp in rows
+           if not 1 / 30 <= float(pp) / float(mv) <= 30]
+    if bad:
+        add(FAIL, g, "H1 purchase_price within 30x of market_valuation", f"{len(bad)} rows, e.g. {bad[:4]}")
+    else:
+        ok(g, "H1 purchase_price within 30x of market_valuation", f"{len(rows)} properties")
+    rows = q(cur, """select a.symbol, a.property_name, a.financial_year, a.market_valuation, b.market_valuation
+                     from sgx_reit_property_final a join sgx_reit_property_final b
+                       on a.symbol = b.symbol and a.property_name = b.property_name
+                      and b.financial_year = a.financial_year + 1
+                     where a.market_valuation > 0 and b.market_valuation > 0""")
+    jumps = [(s, pn, fy) for s, pn, fy, v1, v2 in rows
+             if max(float(v1), float(v2)) / min(float(v1), float(v2)) > 5]
+    if jumps:
+        add(FAIL, g, "H2 valuation YoY change <= 5x", f"{len(jumps)} pairs, e.g. {jumps[:4]}")
+    else:
+        ok(g, "H2 valuation YoY change <= 5x", f"{len(rows)} year pairs")
+
+
 GROUPS = {
     "scale": check_scale,
     "enums": check_enums,
@@ -483,6 +514,7 @@ GROUPS = {
     "coverage": check_coverage,
     "final_sync": check_final_sync,
     "segments": check_segment_consistency,
+    "property_money": check_property_money,
 }
 
 
