@@ -502,6 +502,36 @@ def check_property_money(cur):
         ok(g, "H2 valuation YoY change <= 5x", f"{len(rows)} year pairs")
 
 
+STRATA_ROWS = [("P40U.SI", "Ngee Ann City Property"), ("P40U.SI", "Wisma Atria Property"),
+               ("T82U.SI", "Suntec City Office Towers")]
+
+
+def check_property_basis(cur):
+    """market_valuation and property NPI are stored at 100% of the asset, so the REIT's share is
+    value x ownership. A share-basis value cannot be detected from the data alone (valuations move
+    year to year), so these checks cover the known cases:
+      - strata rows: the REIT owns its units outright, so ownership must be 1
+      - JYEU Parkway Parade: a 10% equity stake; the report gives no property value, so null"""
+    g = "property_basis"
+    bad = []
+    for sym, pn in STRATA_ROWS:
+        for fy, own in q(cur, """select financial_year, ownership from sgx_reit_property_final
+                                 where symbol=%s and property_name=%s""", (sym, pn)):
+            if own is None or abs(float(own) - 1) > 1e-6:
+                bad.append((sym, fy, pn, own))
+    if bad:
+        add(FAIL, g, "strata rows have ownership 1", f"{len(bad)} rows, e.g. {bad[:4]}")
+    else:
+        ok(g, "strata rows have ownership 1")
+    n = q(cur, """select count(*) from sgx_reit_property_final where symbol='JYEU.SI'
+                  and property_name ilike 'Parkway Parade%%' and market_valuation is not null""")[0][0]
+    if n:
+        add(FAIL, g, "JYEU Parkway Parade has no property valuation",
+            f"{n} rows hold the equity-stake value as market_valuation")
+    else:
+        ok(g, "JYEU Parkway Parade has no property valuation")
+
+
 GROUPS = {
     "scale": check_scale,
     "enums": check_enums,
@@ -515,6 +545,7 @@ GROUPS = {
     "final_sync": check_final_sync,
     "segments": check_segment_consistency,
     "property_money": check_property_money,
+    "property_basis": check_property_basis,
 }
 
 
