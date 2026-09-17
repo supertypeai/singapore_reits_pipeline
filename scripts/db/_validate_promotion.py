@@ -45,9 +45,9 @@ for final_t, prod_t, scope in promo.PAIRS:
     src = dev_rows(final_t, SYMS_SI, 2025 if "financial_year" in _cols(C, final_t) else None)
     tr = [promo.transform_row(r, ptypes) for r in src]
     for i, (o, t) in enumerate(zip(src, tr)):
-        # symbol stripped
-        if t.get("symbol", "").endswith(".SI"):
-            problems.append(f"{prod_t}[{i}] symbol not stripped: {t['symbol']}")
+        # prod keeps the .SI suffix
+        if not t.get("symbol", "").endswith(".SI"):
+            problems.append(f"{prod_t}[{i}] symbol lost its .SI suffix: {t['symbol']}")
         # fraction fields in [0,1] and == orig/100
         for f in FRACTION:
             if f in ptypes and t.get(f) is not None:

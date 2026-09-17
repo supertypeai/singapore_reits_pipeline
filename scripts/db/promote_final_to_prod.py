@@ -3,7 +3,7 @@
 Encodes the transforms established by scripts/db/_compare_final_vs_prod.py +
 _compare_values.py (dev *_final vs prod, verified same-report on M44U FY2024):
 
-  symbol            .SI stripped -> bare ticker            (all tables)
+  symbol            kept as-is, with the .SI suffix         (all tables; prod uses .SI)
   percentages       NOT converted here. Every percentage is normalized to 0-1 once, in
                     build_final_tables.py pct01(), so _final and prod agree and this is a
                     pass-through. FRACTION_FIELDS is empty -- see the note on it below.
@@ -33,6 +33,12 @@ Write model (prod is REST-only, non-transactional):
   - all others:   scope = (symbol, fy)     -> DELETE then POST (re-insert)
   This mirrors dev's delete-then-insert-per-scope semantics. NOTE: DELETE and POST
   are separate REST calls; a failure between them leaves that scope empty until re-run.
+
+Other writers: another pipeline adds rows to prod directly (e.g. new transactions).
+  - Orphan scopes (in prod, not in _final) are only reported. Deleting them needs
+    --delete-orphans.
+  - For tables in PROTECT_KEYS, a scope that holds a prod row with no matching dev row
+    is PROTECTED: it is skipped, not deleted.
 
 Usage:
   python scripts/db/promote_final_to_prod.py                          # DRY, all rows
@@ -92,6 +98,12 @@ ROW_FILTERS = {
     "sgx_reit_property_transaction": lambda r: r.get("status") == "completed",
 }
 
+# Row keys used to find prod rows that another pipeline wrote and dev does not have.
+# A scope holding such a row is skipped, so the DELETE never removes it.
+PROTECT_KEYS = {
+    "sgx_reit_property_transaction": ["transaction_type", "property_name"],
+}
+
 
 def parse_args():
     ap = argparse.ArgumentParser(description="Promote dev sgx_reit_*_final -> prod sgx_reit_*.")
@@ -99,6 +111,8 @@ def parse_args():
     ap.add_argument("--fy", type=int, help="single financial_year to promote (default: all)")
     ap.add_argument("--tables", help="comma list of prod table names to limit to (default: all)")
     ap.add_argument("--write", action="store_true", help="apply to prod (default: dry run)")
+    ap.add_argument("--delete-orphans", action="store_true",
+                    help="with --write on a full promote: delete prod scopes that _final does not have")
     ap.add_argument("--limit-preview", type=int, default=1, help="sample rows to print in dry run")
     return ap.parse_args()
 
@@ -146,7 +160,7 @@ def coerce(col, ptype, v):
     if v is None:
         return None
     if col == "symbol":
-        return str(v).removesuffix(".SI")
+        return str(v)
     if col in FRACTION_FIELDS:
         return round(float(v) / 100.0, 8)
     if col in BRACKET_TEXT_FIELDS:
@@ -223,6 +237,12 @@ class Prod:
             if len(page) < 1000:
                 return out
             off += 1000
+
+    def rows(self, table, scope, cols):
+        req = urllib.request.Request(
+            f"{self.url}/rest/v1/{table}?{self._scope_query(scope)}&select={','.join(cols)}",
+            headers=self.h)
+        return json.load(urllib.request.urlopen(req, timeout=120))
 
     def insert(self, table, rows):
         body = json.dumps(rows).encode("utf-8")
@@ -396,6 +416,8 @@ def main():
         print(f"\n### {final_table} -> {prod_table}")
         print(f"    dev rows selected: {len(rows)}   scopes: {len(scopes)}   "
               f"(prod cols sent: {len(prod_types)})")
+        # rows actually sent, after the row filter and trade-mix aggregation
+        print(f"    TOTAL to send: {sum(len(g) for g in scopes.values())} rows in {len(scopes)} scopes")
         _mapped = set(COLUMN_ALIAS.values())
         dropped = [c for c in (rows[0].keys() if rows else [])
                    if c not in prod_types and c not in _mapped]
@@ -434,16 +456,33 @@ def main():
                 print(f"    (orphan-scope check skipped: {exc})")
             if orphans:
                 print(f"    ORPHAN scopes in prod with no rows in _final: {len(orphans)} -> "
-                      f"{orphans[:6]}{' ...' if len(orphans) > 6 else ''}")
+                      f"{orphans[:6]}{' ...' if len(orphans) > 6 else ''}"
+                      f"{'' if args.delete_orphans else '  (kept; --delete-orphans to remove)'}")
+
+        protected = set()
+        pkeys = PROTECT_KEYS.get(prod_table)
+        if pkeys:
+            for key, group in scopes.items():
+                dev_keys = {tuple(r.get(c) for c in pkeys) for r in group}
+                extra = [r for r in prod.rows(prod_table, dict(key), pkeys)
+                         if tuple(r.get(c) for c in pkeys) not in dev_keys]
+                if extra:
+                    protected.add(key)
+                    print(f"    PROTECTED scope {dict(key)}: prod has {len(extra)} row(s) dev does not, "
+                          f"e.g. {extra[:2]}; scope skipped")
 
         if args.write:
-            for scope in orphans:
+            for scope in (orphans if args.delete_orphans else []):
                 try:
                     print(f"    DELETED orphan scope {scope}: {prod.delete(prod_table, scope)}")
                 except urllib.error.HTTPError as e:
                     print(f"    ERROR orphan {scope}: HTTP {e.code}")
+                except Exception as e:
+                    print(f"    ERROR orphan {scope}: {e!r}")
             for key, group in scopes.items():
                 scope = dict(key)
+                if key in protected:
+                    continue
                 try:
                     dstat = prod.delete(prod_table, scope)
                     # a scope emptied by ROW_FILTERS is deleted and left empty; POSTing []
@@ -452,6 +491,9 @@ def main():
                     print(f"    WROTE scope {scope}: delete={dstat} insert={istat} rows={len(group)}")
                 except urllib.error.HTTPError as e:
                     print(f"    ERROR scope {scope}: HTTP {e.code} {e.read().decode('utf-8','replace')[:300]}")
+                except Exception as e:
+                    # e.g. a timeout between DELETE and POST, which can leave the scope empty
+                    print(f"    ERROR scope {scope}: {e!r}")
 
     if not args.write:
         print("\n(DRY RUN — nothing written to prod. Re-run with --write to apply.)")
