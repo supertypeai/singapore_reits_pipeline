@@ -79,6 +79,9 @@ def read_rebuild():
     for f in sorted(glob.glob(os.path.join(ROOT, "txn_rebuild", "*.json"))):
         j = json.load(open(f, encoding="utf-8"))
         sym, fy = j.get("symbol"), j.get("financial_year")
+        # rebuild files hold bare tickers; every table uses '<TICKER>.SI'
+        if sym and not sym.endswith(".SI"):
+            sym += ".SI"
         for t in j.get("transactions", []):
             isdiv = "acquisition" not in str(t.get("transaction_type", ""))
             # v2 rename: reference_* -> basis_*
