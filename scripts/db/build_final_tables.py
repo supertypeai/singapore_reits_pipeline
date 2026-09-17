@@ -222,21 +222,23 @@ cur.execute("""select symbol,financial_year,property_name,country,category,addre
  market_valuation,purchase_price,valuation_date,net_property_income,net_property_income_currency,
  gross_revenue,gross_revenue_currency,occupancy_rate,nla,gfa,area_unit,land_tenure,
  lease_term_years,lease_expiry_date,status,purchase_date,
- coordinate_latitude,coordinate_longitude from sgx_reit_property""")
+ coordinate_latitude,coordinate_longitude,purchase_price_currency from sgx_reit_property""")
 prows=[]
 for r in cur.fetchall():
     # gla dropped 2026-08-03 (schema review): 9 surviving values moved into nla, column removed.
     # effective_date dropped 2026-08-04: every value it could still contribute was derived into
     # lease_expiry_date first (7 final rows), so the column is gone from RAW as well as _final.
     (sym,fy,pn,ctry,cat,addr,own,mv,pp,vdate,npi,npic,gr,grc,occ,nla,gfa,au,lt,lty,lexp,st,pdate,
-     clat,clng)=r
+     clat,clng,ppc)=r
     d=fy_end(sym,fy)
-    # Rule A: mv, pp already SGD. Rule B: gross/npi in-tag.
+    # Rule A: mv already SGD in raw. Rule B: gross/npi/purchase_price in their own tag,
+    # converted at the report date (FY end). purchase_price was passed through until
+    # 2026-09-17, leaving 1,351 prod prices in JPY/EUR/IDR/... labelled SGD.
     def area(v):
         if v is None: return None
         return round(float(v)*SQFT_TO_SQM) if (au and str(au).lower() in ('sqft','sq ft','square feet')) else float(v)
     prows.append((sym,fy,pn,ctry,cat,addr, pct01(own),
-      float(mv) if mv is not None else None, float(pp) if pp is not None else None, vdate,
+      float(mv) if mv is not None else None, to_sgd(pp,ppc,d,f'prop.pp.{sym}:{pn}'), vdate,
       to_sgd(npi,npic,d,f'prop.npi.{sym}:{pn}'), to_sgd(gr,grc,d,f'prop.gr.{sym}:{pn}'),
       pct01(occ), area(nla), area(gfa),
       # effective_date dropped from _final 2026-08-04 (schema review): lease_expiry_date is
