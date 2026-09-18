@@ -67,11 +67,11 @@ for final_t, prod_t, scope in promo.PAIRS:
         for c, pt in ptypes.items():
             if pt in ("text","character varying") and t.get(c) is not None and isinstance(t[c],(dict,list)):
                 problems.append(f"{prod_t}[{i}] {c} text col holds {type(t[c]).__name__}")
-        # properties_location is list
+        # properties_location is a text[] (2026-09-18): a list of plain country names
         if "properties_location" in ptypes and t.get("properties_location") is not None:
             pl = t["properties_location"]
-            if not (isinstance(pl, str) and pl.startswith("[") and pl.endswith("]")):
-                problems.append(f"{prod_t}[{i}] properties_location not bracketed text: {pl!r}")
+            if not (isinstance(pl, list) and all(isinstance(x, str) for x in pl)):
+                problems.append(f"{prod_t}[{i}] properties_location not a list of strings: {pl!r}")
         # dev-only cols absent
         for dc in ("deal_id","source_type","announcement_refs"):
             if dc in t: problems.append(f"{prod_t}[{i}] dev-only col leaked: {dc}")

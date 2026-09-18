@@ -342,16 +342,19 @@ def check_tallies(cur):
     for s, fy, dpu, rec in rows:
         if not rec or dpu is None:
             continue
+        if (s, fy) in TRANCHE_EXCEPTIONS:
+            continue
         tot = sum(t["dpu"] for t in rec if t.get("dpu") is not None)
         if abs(tot - float(dpu)) > 0.02:
             off.append((s, fy, round(tot, 3), float(dpu)))
     if off:
-        add(WARN, g, "sum(distribution_record.dpu) = dpu",
+        add(FAIL, g, "sum(distribution_record.dpu) = dpu (raw, cents)",
             f"{len(off)} rows short: " +
             "; ".join(f"{s} FY{fy} record {a} vs dpu {b}" for s, fy, a, b in off[:6]) +
             ". Usually a semi-annual payer with only one half captured")
     else:
-        ok(g, "sum(distribution_record.dpu) = dpu", "all tally")
+        ok(g, "sum(distribution_record.dpu) = dpu (raw, cents)",
+           f"all tally ({len(TRANCHE_EXCEPTIONS)} excepted)")
 
 
 def check_nulls(cur):
@@ -532,6 +535,82 @@ def check_property_basis(cur):
         ok(g, "JYEU Parkway Parade has no property valuation")
 
 
+# canonical country name -> ISO 3166-1 alpha-2, lowercase (the code flagcdn expects:
+# https://flagcdn.com/w40/<code>.png). One name, one code, so the frontend can show a flag.
+COUNTRY_CODE = {
+    "Australia": "au", "Belgium": "be", "Canada": "ca", "China": "cn", "Czech Republic": "cz",
+    "Denmark": "dk", "Finland": "fi", "France": "fr", "Germany": "de", "Hong Kong": "hk",
+    "India": "in", "Indonesia": "id", "Ireland": "ie", "Italy": "it", "Japan": "jp",
+    "Malaysia": "my", "Maldives": "mv", "Netherlands": "nl", "New Zealand": "nz",
+    "Philippines": "ph", "Poland": "pl", "Singapore": "sg", "Slovakia": "sk",
+    "South Korea": "kr", "Spain": "es", "Switzerland": "ch", "United Kingdom": "gb",
+    "United States": "us", "Vietnam": "vn",
+}
+
+
+# REIT-years whose tranches cannot add up to DPU yet, with the reason. Waivers key on
+# (group, check) and would hide every other failure of the same check, so the exceptions
+# live here instead.
+TRANCHE_EXCEPTIONS = {
+    ("A17U.SI", 2025): "H2 2025 tranche is paid in 2026, so only the FY2026 AR prints it",
+}
+
+
+def check_tranches_final(cur):
+    """Same check as in tallies, on _final where DPU is SGD dollars (D-6), so the tolerance
+    is 100x smaller."""
+    g = "tranches"
+    off = []
+    for s, fy, dpu, rec in q(cur, """select symbol, financial_year, distribution_per_unit, distribution_record
+                                     from sgx_reit_performance_final"""):
+        if not rec or dpu is None or (s, fy) in TRANCHE_EXCEPTIONS:
+            continue
+        tot = sum(t["dpu"] for t in rec if t.get("dpu") is not None)
+        if abs(tot - float(dpu)) > 0.0002:
+            off.append((s, fy, round(tot, 6), float(dpu)))
+    if off:
+        add(FAIL, g, "sum(distribution_record.dpu) = dpu (final, SGD)",
+            f"{len(off)} rows: " + "; ".join(f"{s} FY{fy} record {a} vs dpu {b}" for s, fy, a, b in off[:6]))
+    else:
+        ok(g, "sum(distribution_record.dpu) = dpu (final, SGD)", f"{len(TRANCHE_EXCEPTIONS)} excepted")
+
+
+def check_rollforward_final(cur):
+    """closing = opening + income_for_year + other_additions - distribution_paid - amount_retained,
+    on _final, to S$1,000. other_additions is signed (D-10), so C2PU's rounding adjustment is
+    inside it. Rows missing a term are skipped; check_tallies covers the raw table."""
+    g = "rollforward_final"
+    rows = q(cur, """select symbol, financial_year, distributable_income_opening, income_for_year,
+                            other_additions, distribution_paid, amount_retained, distributable_income_closing
+                     from sgx_reit_performance_final""")
+    off, checked = [], 0
+    for s, fy, o, i, a, p, r, c in rows:
+        if None in (o, i, p, c):
+            continue
+        checked += 1
+        calc = float(o) + float(i) + float(a or 0) - float(p) - float(r or 0)
+        if abs(calc - float(c)) > 1000:
+            off.append((s, fy, round(calc), float(c)))
+    if off:
+        add(FAIL, g, "distribution rollforward closes",
+            f"{len(off)} of {checked} rows: " +
+            "; ".join(f"{s} FY{fy} calc {a:,} vs closing {b:,.0f}" for s, fy, a, b in off[:5]))
+    else:
+        ok(g, "distribution rollforward closes", f"{checked} rows close")
+
+
+def check_countries(cur):
+    """Every country must be one canonical name that maps to one flag code."""
+    g = "countries"
+    bad = q(cur, """select country, count(*) from sgx_reit_property_final
+                    where country is not null and country <> ALL(%s) group by 1 order by 2 desc""",
+            (list(COUNTRY_CODE),))
+    if bad:
+        add(FAIL, g, "country in the canonical list", f"{len(bad)} values: {[(c, n) for c, n in bad]}")
+    else:
+        ok(g, "country in the canonical list", f"{len(COUNTRY_CODE)} names, each with a flag code")
+
+
 def check_transactions(cur):
     """D-9: transaction_price and basis_value are gross (before debt) and for the stake
     transacted. A price for the stake against a 100% basis, or a net-of-debt price against a
@@ -564,6 +643,9 @@ GROUPS = {
     "property_money": check_property_money,
     "property_basis": check_property_basis,
     "transactions": check_transactions,
+    "countries": check_countries,
+    "tranches": check_tranches_final,
+    "rollforward_final": check_rollforward_final,
 }
 
 

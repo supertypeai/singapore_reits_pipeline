@@ -29,6 +29,18 @@ def selected(name):
 STRICT_CURRENCY = ('--strict-currency' in sys.argv)
 inherited_ccy = []
 SQFT_TO_SQM = 0.092903
+# one canonical country name per country, so each maps to one flag code (ISO 3166-1
+# alpha-2, what flagcdn expects). db_guard.COUNTRY_CODE holds the name -> code table.
+_COUNTRY = {'The Netherlands': 'Netherlands', 'The United Kingdom': 'United Kingdom',
+            'USA': 'United States', 'United States of America': 'United States',
+            'Hong Kong SAR': 'Hong Kong'}
+def country(v):
+    return None if v is None else _COUNTRY.get(v.strip(), v.strip())
+def loc_list(ploc):
+    """properties_location: normalize_locations() cleans the names and returns '[A, B]';
+    _final and prod store a text[] so the frontend gets an array, not a string."""
+    s = normalize_locations(ploc)
+    return None if not s else [x.strip() for x in s.strip('[]').split(',') if x.strip()]
 
 # ---- percentages ----
 # ONE convention, database-wide (2026-08-04): every column that expresses a PERCENTAGE is
@@ -184,7 +196,7 @@ for r in cur.fetchall():
         return [{'dpu': cents_to_sgd(t['dpu']) if t.get('dpu') is not None else None,
                  'period_start': t.get('period_start'),
                  'period_end':   t.get('period_end')} for t in rec]
-    prows.append((sym,fy,date,src,normalize_locations(ploc),nuh,
+    prows.append((sym,fy,date,src,loc_list(ploc),nuh,
       float(uii) if uii is not None else None,
       float(utbi) if utbi is not None else None,
       Json(cv_record(drec)) if drec is not None else None,
@@ -194,7 +206,7 @@ for r in cur.fetchall():
       cents_to_sgd(dpu), cv(nav), cv(pv), cv(gr), cv(npi), cv(ify), cv(ddec), cv(dio), cv(dpaid), cv(dic),
       cv(retained), cv(addns)))
 ddl_drop_create('sgx_reit_performance_final',
-  'symbol text, financial_year smallint, date date, source_url text, properties_location text, number_of_unitholders int, '
+  'symbol text, financial_year smallint, date date, source_url text, properties_location text[], number_of_unitholders int, '
   'units_in_issue numeric, units_to_be_issued numeric, distribution_record jsonb, '
   'aggregate_leverage numeric, interest_coverage_ratio numeric, '
   'cost_of_debt numeric, weighted_average_debt_maturity numeric, weighted_average_lease_expiry numeric, '
@@ -241,7 +253,7 @@ for r in cur.fetchall():
     def area(v):
         if v is None: return None
         return round(float(v)*SQFT_TO_SQM) if (au and str(au).lower() in ('sqft','sq ft','square feet')) else float(v)
-    prows.append((sym,fy,pn,ctry,cat,addr, pct01(own),
+    prows.append((sym,fy,pn,country(ctry),cat,addr, pct01(own),
       float(mv) if mv is not None else None, to_sgd(pp,ppc,d,f'prop.pp.{sym}:{pn}'), vdate,
       to_sgd(npi,npic,d,f'prop.npi.{sym}:{pn}'), to_sgd(gr,grc,d,f'prop.gr.{sym}:{pn}'),
       pct01(occ), area(nla), area(gfa),

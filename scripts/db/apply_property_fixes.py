@@ -32,6 +32,7 @@ import os
 import sys
 
 import psycopg2
+from psycopg2.extras import Json
 from dotenv import load_dotenv
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -45,6 +46,8 @@ TABLE, KEY = DEFAULT_TABLE, DEFAULT_KEY
 def same(a, b):
     if a is None or b is None:
         return a is None and b is None
+    if isinstance(a, (list, dict)) or isinstance(b, (list, dict)):
+        return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
     try:
         return math.isclose(float(a), float(b), rel_tol=1e-9, abs_tol=0.5)
     except (TypeError, ValueError):
@@ -144,7 +147,10 @@ def main():
             cur.execute(f"insert into {TABLE} ({', '.join(cols)}) values ({', '.join(['%s'] * len(cols))})",
                         [target[c] for c in cols])
         else:
-            cur.execute(f"update {TABLE} set {col}=%s where {where}", (target, *key))
+            # jsonb columns (e.g. distribution_record) must go through Json(), or psycopg2
+            # adapts a Python list to a Postgres array
+            value = Json(target) if isinstance(target, (list, dict)) else target
+            cur.execute(f"update {TABLE} set {col}=%s where {where}", (value, *key))
             if cur.rowcount != 1:
                 conn.rollback()
                 sys.exit(f"STOP: update of {key} {col} touched {cur.rowcount} rows; rolled back")

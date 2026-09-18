@@ -53,7 +53,6 @@ import os, sys, re, json, argparse, datetime, decimal, urllib.request, urllib.er
 import psycopg2
 from dotenv import load_dotenv
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from normalize_locations import normalize_locations
 
 # ---------- config ----------
 PAIRS = [  # (dev_final, prod, scope_cols)
@@ -77,8 +76,10 @@ PAIRS = [  # (dev_final, prod, scope_cols)
 # performance.aggregate_leverage, cost_of_debt and portfolio_occupancy. Any consumer
 # formatting those as already-percent needs a x100 at the display layer.
 FRACTION_FIELDS = set()
-# text "A, B, C" / "A; B; C" -> prod's bracketed text "[A, B, C]" (NOT a real array)
-BRACKET_TEXT_FIELDS = {"properties_location"}
+# EMPTY since 2026-09-18: properties_location is a text[] in _final and in prod (the
+# migration converts prod's bracketed text), so a Python list is sent as a JSON array and
+# no bracketed-string transform is left.
+BRACKET_TEXT_FIELDS = set()
 # prod column name -> dev *_final column name (where they differ).
 # Coordinates: dev uses coordinate_* ; prod uses bare latitude/longitude.
 # coordinate_source is RAW-only (geocoder provenance) and never reaches _final.
@@ -163,10 +164,6 @@ def coerce(col, ptype, v):
         return str(v)
     if col in FRACTION_FIELDS:
         return round(float(v) / 100.0, 8)
-    if col in BRACKET_TEXT_FIELDS:
-        # canonical country normalization: strip cities/parentheticals, unify variants,
-        # dedupe, "[A, B, C]" (see normalize_locations.py)
-        return normalize_locations(v)
     if ptype == "date":
         ds = to_date_str(v)
         if ds is None and v is not None:
