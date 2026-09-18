@@ -1,7 +1,11 @@
-"""Apply cited fixes to dev raw sgx_reit_property from citation files.
+"""Apply cited fixes to a dev raw sgx_reit_* table from citation files.
 
-Citation files live in internal/fixes/property/*.json:
-  {"fix": "<name>", "entries": [
+Citation files live in internal/fixes/property/*.json. A file may name its table; the default
+is sgx_reit_property keyed on (symbol, financial_year, property_name):
+  {"fix": "<name>",
+   "table": "sgx_reit_property_transaction",
+   "key_columns": ["symbol", "financial_year", "transaction_type", "property_name"],
+   "entries": [
      {"key": {"symbol": "A17U.SI", "financial_year": 2024, "property_name": "FoodAxis @ Senoko"},
       "set": {"purchase_price": 57800000},
       "expected_current": {"purchase_price": 1900000},
@@ -33,8 +37,9 @@ from dotenv import load_dotenv
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 load_dotenv(os.path.join(ROOT, ".env"))
 FIX_DIR = os.path.join(ROOT, "internal", "fixes", "property")
-TABLE = "sgx_reit_property"
-KEY = ("symbol", "financial_year", "property_name")
+DEFAULT_TABLE = "sgx_reit_property"
+DEFAULT_KEY = ("symbol", "financial_year", "property_name")
+TABLE, KEY = DEFAULT_TABLE, DEFAULT_KEY
 
 
 def same(a, b):
@@ -46,27 +51,29 @@ def same(a, b):
         return str(a) == str(b)
 
 
-def key_of(entry):
-    return tuple(entry["key"][k] for k in KEY)
+def key_of(entry, key=None):
+    return tuple(entry["key"][k] for k in (key or KEY))
 
 
 def check_owners():
     owners = {}
     for path in sorted(glob.glob(os.path.join(FIX_DIR, "*.json"))):
         with open(path, encoding="utf-8") as fh:
-            for e in json.load(fh)["entries"]:
-                cols = list(e.get("set", {})) or [f"<{e.get('action')}>"]
-                for col in cols:
-                    cell = key_of(e) + (col,)
-                    if cell in owners and owners[cell] != path:
-                        sys.exit(f"STOP: {cell} is claimed by {os.path.basename(owners[cell])} "
-                                 f"and {os.path.basename(path)}")
-                    owners[cell] = path
+            fix = json.load(fh)
+        key = tuple(fix.get("key_columns", DEFAULT_KEY))
+        table = fix.get("table", DEFAULT_TABLE)
+        for e in fix["entries"]:
+            for col in list(e.get("set", {})) or [f"<{e.get('action')}>"]:
+                cell = (table,) + key_of(e, key) + (col,)
+                if cell in owners and owners[cell] != path:
+                    sys.exit(f"STOP: {cell} is claimed by {os.path.basename(owners[cell])} "
+                             f"and {os.path.basename(path)}")
+                owners[cell] = path
 
 
 def fetch(cur, key, cols):
-    cur.execute(f"select {', '.join(cols)} from {TABLE} where symbol=%s and financial_year=%s and property_name=%s",
-                key)
+    where = " and ".join(f"{k}=%s" for k in KEY)
+    cur.execute(f"select {', '.join(cols)} from {TABLE} where {where}", key)
     rows = cur.fetchall()
     if len(rows) > 1:
         sys.exit(f"STOP: key {key} matches {len(rows)} rows")
@@ -80,6 +87,9 @@ def main():
     check_owners()
     with open(path, encoding="utf-8") as fh:
         fix = json.load(fh)
+    global TABLE, KEY
+    TABLE = fix.get("table", DEFAULT_TABLE)
+    KEY = tuple(fix.get("key_columns", DEFAULT_KEY))
 
     conn = psycopg2.connect(os.environ["SUPABASE_CONNECTION_STRING"])
     cur = conn.cursor()
@@ -89,11 +99,11 @@ def main():
         key = key_of(e)
         action = e.get("action", "set")
         if action == "delete":
-            live = fetch(cur, key, ["property_name"])
+            live = fetch(cur, key, [KEY[-1]])
             status = "skip" if live is None else "write"
             plan.append((status, key, "DELETE", None, None))
         elif action == "insert":
-            live = fetch(cur, key, ["property_name"])
+            live = fetch(cur, key, [KEY[-1]])
             status = "skip" if live is not None else "write"
             plan.append((status, key, "INSERT", None, e["row"]))
         else:
@@ -114,7 +124,7 @@ def main():
     for status, key, col, cur_val, target in plan:
         counts[status] += 1
         if status != "skip":
-            print(f"  {status.upper():8} {key[0]:8} FY{key[1]} {key[2][:38]:38} {col:22} "
+            print(f"  {status.upper():8} {key[0]:8} FY{key[1]} {str(key[-1])[:38]:38} {col:22} "
                   f"{cur_val} -> {target if col not in ('INSERT',) else 'row'}")
     print(f"{fix['fix']}: write {counts['write']}, skip {counts['skip']}, conflict {counts['conflict']}")
 
@@ -126,15 +136,15 @@ def main():
     for status, key, col, _cur, target in plan:
         if status != "write":
             continue
+        where = " and ".join(f"{k}=%s" for k in KEY)
         if col == "DELETE":
-            cur.execute(f"delete from {TABLE} where symbol=%s and financial_year=%s and property_name=%s", key)
+            cur.execute(f"delete from {TABLE} where {where}", key)
         elif col == "INSERT":
             cols = list(target)
             cur.execute(f"insert into {TABLE} ({', '.join(cols)}) values ({', '.join(['%s'] * len(cols))})",
                         [target[c] for c in cols])
         else:
-            cur.execute(f"update {TABLE} set {col}=%s where symbol=%s and financial_year=%s and property_name=%s",
-                        (target, *key))
+            cur.execute(f"update {TABLE} set {col}=%s where {where}", (target, *key))
             if cur.rowcount != 1:
                 conn.rollback()
                 sys.exit(f"STOP: update of {key} {col} touched {cur.rowcount} rows; rolled back")

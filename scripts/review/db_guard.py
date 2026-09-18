@@ -532,6 +532,23 @@ def check_property_basis(cur):
         ok(g, "JYEU Parkway Parade has no property valuation")
 
 
+def check_transactions(cur):
+    """D-9: transaction_price and basis_value are gross (before debt) and for the stake
+    transacted. A price for the stake against a 100% basis, or a net-of-debt price against a
+    gross basis, shows up as a ratio far from 1 (C38U ION Orchard sat at 0.29)."""
+    g = "transactions"
+    rows = q(cur, """select symbol, financial_year, property_name, interest_pct,
+                            transaction_price, basis_value
+                     from sgx_reit_property_transaction_final
+                     where transaction_price > 0 and basis_value > 0""")
+    bad = [(s, fy, pn, round(float(p) / float(b), 2)) for s, fy, pn, ip, p, b in rows
+           if not 0.5 <= float(p) / float(b) <= 2]
+    if bad:
+        add(FAIL, g, "price within 0.5-2x of basis_value", f"{len(bad)} rows, e.g. {bad[:4]}")
+    else:
+        ok(g, "price within 0.5-2x of basis_value", f"{len(rows)} rows with both figures")
+
+
 GROUPS = {
     "scale": check_scale,
     "enums": check_enums,
@@ -546,6 +563,7 @@ GROUPS = {
     "segments": check_segment_consistency,
     "property_money": check_property_money,
     "property_basis": check_property_basis,
+    "transactions": check_transactions,
 }
 
 
