@@ -45,9 +45,9 @@ for final_t, prod_t, scope in promo.PAIRS:
     src = dev_rows(final_t, SYMS_SI, 2025 if "financial_year" in _cols(C, final_t) else None)
     tr = [promo.transform_row(r, ptypes) for r in src]
     for i, (o, t) in enumerate(zip(src, tr)):
-        # symbol stripped
-        if t.get("symbol", "").endswith(".SI"):
-            problems.append(f"{prod_t}[{i}] symbol not stripped: {t['symbol']}")
+        # prod keeps the .SI suffix
+        if not t.get("symbol", "").endswith(".SI"):
+            problems.append(f"{prod_t}[{i}] symbol lost its .SI suffix: {t['symbol']}")
         # fraction fields in [0,1] and == orig/100
         for f in FRACTION:
             if f in ptypes and t.get(f) is not None:
@@ -67,11 +67,11 @@ for final_t, prod_t, scope in promo.PAIRS:
         for c, pt in ptypes.items():
             if pt in ("text","character varying") and t.get(c) is not None and isinstance(t[c],(dict,list)):
                 problems.append(f"{prod_t}[{i}] {c} text col holds {type(t[c]).__name__}")
-        # properties_location is list
+        # properties_location is a text[] (2026-09-18): a list of plain country names
         if "properties_location" in ptypes and t.get("properties_location") is not None:
             pl = t["properties_location"]
-            if not (isinstance(pl, str) and pl.startswith("[") and pl.endswith("]")):
-                problems.append(f"{prod_t}[{i}] properties_location not bracketed text: {pl!r}")
+            if not (isinstance(pl, list) and all(isinstance(x, str) for x in pl)):
+                problems.append(f"{prod_t}[{i}] properties_location not a list of strings: {pl!r}")
         # dev-only cols absent
         for dc in ("deal_id","source_type","announcement_refs"):
             if dc in t: problems.append(f"{prod_t}[{i}] dev-only col leaked: {dc}")

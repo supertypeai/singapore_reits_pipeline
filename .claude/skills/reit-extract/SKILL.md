@@ -174,6 +174,15 @@ Full catalogue in REFERENCE.md §4. The five that bite hardest:
 | Held-for-sale / divested-in-year | separate audited row + partial-year P&L contribution; reconciliation won't tie unless you account for it |
 | Sub-sector mismatch | DC client-type ≠ trade mix; hospitality contract-type ≠ trade mix; don't emit them as trade_mix rows |
 
+## Property basis and ownership (2026-09-17)
+
+- `market_valuation`, `net_property_income` and `gross_revenue` are stored at **100% of the asset**. If the report prints only the REIT's share, store the 100% figure it prints elsewhere ("carrying value based on 100.0% interest", a footnote) or divide by the stated interest, and say which in a note. Never multiply a figure by `ownership`.
+- `ownership` comes from the subsidiary / joint-venture table (effective interest), not from "held under X REIT" or "held through Y Trust". A table row with no property name is mapped by matching its revenue or non-current assets to one property; if no match is certain, leave `ownership` null with a note.
+- Strata units owned outright (e.g. Ngee Ann City, Suntec City Office Towers): value as printed, `ownership` = 100.
+- An equity investment whose income is dividend income below NPI is not a property valuation: keep the row if asked, but `market_valuation` = null.
+- `purchase_price_currency` is the currency the price column is printed in. Many REITs print foreign prices in S$ (A17U, K71U); others print JPY, EUR, IDR. A purchase price is historical: the same property must carry the same price every year — a change means a row shift or a redevelopment cost; check which.
+- Parsed tables can shift values one row against their names (A17U FY2024 p.48). Cross-check a row's valuation against the Portfolio Statement before trusting its other columns.
+
 ## Self-check before finishing
 
 - Any money value < 1,000,000? You left it in $'000/millions — rescale.

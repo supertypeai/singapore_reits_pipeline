@@ -29,6 +29,20 @@ def selected(name):
 STRICT_CURRENCY = ('--strict-currency' in sys.argv)
 inherited_ccy = []
 SQFT_TO_SQM = 0.092903
+# one canonical country name per country, so each maps to one flag code (ISO 3166-1
+# alpha-2, what flagcdn expects). db_guard.COUNTRY_CODE holds the name -> code table.
+_COUNTRY = {'The Netherlands': 'Netherlands', 'The United Kingdom': 'United Kingdom',
+            'USA': 'United States', 'United States of America': 'United States',
+            'Hong Kong SAR': 'Hong Kong'}
+def country(v):
+    return None if v is None else _COUNTRY.get(v.strip(), v.strip())
+def loc_list(ploc):
+    """properties_location: normalize_locations() cleans the names and returns '[A, B]';
+    _final and prod store a text[] so the frontend gets an array, not a string. The same
+    _COUNTRY map is applied as for property.country -- normalize_locations canonicalizes to
+    'Hong Kong SAR', which has no flag code, and the two tables must agree."""
+    s = normalize_locations(ploc)
+    return None if not s else [country(x) for x in s.strip('[]').split(',') if x.strip()]
 
 # ---- percentages ----
 # ONE convention, database-wide (2026-08-04): every column that expresses a PERCENTAGE is
@@ -161,6 +175,10 @@ for r in cur.fetchall():
     (sym,fy,date,src,ccy,ploc,nuh,uii,utbi,drec,dpm,lev,icr,cod,wadm,wale,occ,dpu,nav,
      pv,gr,npi,ify,ddec,dio,dpaid,dic,retained,addns)=r
     def cv(v): return to_sgd(v, ccy, date, f'perf.{sym}')
+    # raw DPU is cents as reported; _final and prod hold SGD dollars, the same unit as NAV
+    def cents_to_sgd(v):
+        s = cv(v)
+        return None if s is None else round(s / 100, 8)
     def cv_record(rec):
         # distribution_record was passed through UNCONVERTED while distribution_per_unit
         # was converted, so in _final a foreign reporter's tranches and its headline sat
@@ -177,20 +195,20 @@ for r in cur.fetchall():
         #   pay_date  19% filled
         # RAW keeps every key.
         if rec is None: return None
-        return [{'dpu': cv(t['dpu']) if t.get('dpu') is not None else None,
+        return [{'dpu': cents_to_sgd(t['dpu']) if t.get('dpu') is not None else None,
                  'period_start': t.get('period_start'),
                  'period_end':   t.get('period_end')} for t in rec]
-    prows.append((sym,fy,date,src,normalize_locations(ploc),nuh,
+    prows.append((sym,fy,date,src,loc_list(ploc),nuh,
       float(uii) if uii is not None else None,
       float(utbi) if utbi is not None else None,
       Json(cv_record(drec)) if drec is not None else None,
       pct01(lev), float(icr) if icr is not None else None,   # icr is a MULTIPLE, not a percent
       pct01(cod), float(wadm) if wadm is not None else None,
       float(wale) if wale is not None else None, pct01(occ),
-      cv(dpu), cv(nav), cv(pv), cv(gr), cv(npi), cv(ify), cv(ddec), cv(dio), cv(dpaid), cv(dic),
+      cents_to_sgd(dpu), cv(nav), cv(pv), cv(gr), cv(npi), cv(ify), cv(ddec), cv(dio), cv(dpaid), cv(dic),
       cv(retained), cv(addns)))
 ddl_drop_create('sgx_reit_performance_final',
-  'symbol text, financial_year smallint, date date, source_url text, properties_location text, number_of_unitholders int, '
+  'symbol text, financial_year smallint, date date, source_url text, properties_location text[], number_of_unitholders int, '
   'units_in_issue numeric, units_to_be_issued numeric, distribution_record jsonb, '
   'aggregate_leverage numeric, interest_coverage_ratio numeric, '
   'cost_of_debt numeric, weighted_average_debt_maturity numeric, weighted_average_lease_expiry numeric, '
@@ -222,21 +240,23 @@ cur.execute("""select symbol,financial_year,property_name,country,category,addre
  market_valuation,purchase_price,valuation_date,net_property_income,net_property_income_currency,
  gross_revenue,gross_revenue_currency,occupancy_rate,nla,gfa,area_unit,land_tenure,
  lease_term_years,lease_expiry_date,status,purchase_date,
- coordinate_latitude,coordinate_longitude from sgx_reit_property""")
+ coordinate_latitude,coordinate_longitude,purchase_price_currency from sgx_reit_property""")
 prows=[]
 for r in cur.fetchall():
     # gla dropped 2026-08-03 (schema review): 9 surviving values moved into nla, column removed.
     # effective_date dropped 2026-08-04: every value it could still contribute was derived into
     # lease_expiry_date first (7 final rows), so the column is gone from RAW as well as _final.
     (sym,fy,pn,ctry,cat,addr,own,mv,pp,vdate,npi,npic,gr,grc,occ,nla,gfa,au,lt,lty,lexp,st,pdate,
-     clat,clng)=r
+     clat,clng,ppc)=r
     d=fy_end(sym,fy)
-    # Rule A: mv, pp already SGD. Rule B: gross/npi in-tag.
+    # Rule A: mv already SGD in raw. Rule B: gross/npi/purchase_price in their own tag,
+    # converted at the report date (FY end). purchase_price was passed through until
+    # 2026-09-17, leaving 1,351 prod prices in JPY/EUR/IDR/... labelled SGD.
     def area(v):
         if v is None: return None
         return round(float(v)*SQFT_TO_SQM) if (au and str(au).lower() in ('sqft','sq ft','square feet')) else float(v)
-    prows.append((sym,fy,pn,ctry,cat,addr, pct01(own),
-      float(mv) if mv is not None else None, float(pp) if pp is not None else None, vdate,
+    prows.append((sym,fy,pn,country(ctry),cat,addr, pct01(own),
+      float(mv) if mv is not None else None, to_sgd(pp,ppc,d,f'prop.pp.{sym}:{pn}'), vdate,
       to_sgd(npi,npic,d,f'prop.npi.{sym}:{pn}'), to_sgd(gr,grc,d,f'prop.gr.{sym}:{pn}'),
       pct01(occ), area(nla), area(gfa),
       # effective_date dropped from _final 2026-08-04 (schema review): lease_expiry_date is

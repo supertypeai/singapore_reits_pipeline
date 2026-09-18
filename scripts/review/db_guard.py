@@ -91,7 +91,7 @@ NOT_PCT = [
     ("sgx_reit_performance_final", "interest_coverage_ratio", 0.5, 60),
     ("sgx_reit_performance_final", "weighted_average_lease_expiry", 0.1, 60),
     ("sgx_reit_performance_final", "weighted_average_debt_maturity", 0.1, 30),
-    ("sgx_reit_performance_final", "distribution_per_unit", 0, 200),      # cents
+    ("sgx_reit_performance_final", "distribution_per_unit", 0, 2),        # SGD dollars
     ("sgx_reit_performance_final", "net_asset_value_per_unit", 0, 50),    # dollars
 ]
 
@@ -342,16 +342,19 @@ def check_tallies(cur):
     for s, fy, dpu, rec in rows:
         if not rec or dpu is None:
             continue
+        if (s, fy) in TRANCHE_EXCEPTIONS:
+            continue
         tot = sum(t["dpu"] for t in rec if t.get("dpu") is not None)
         if abs(tot - float(dpu)) > 0.02:
             off.append((s, fy, round(tot, 3), float(dpu)))
     if off:
-        add(WARN, g, "sum(distribution_record.dpu) = dpu",
+        add(FAIL, g, "sum(distribution_record.dpu) = dpu (raw, cents)",
             f"{len(off)} rows short: " +
             "; ".join(f"{s} FY{fy} record {a} vs dpu {b}" for s, fy, a, b in off[:6]) +
             ". Usually a semi-annual payer with only one half captured")
     else:
-        ok(g, "sum(distribution_record.dpu) = dpu", "all tally")
+        ok(g, "sum(distribution_record.dpu) = dpu (raw, cents)",
+           f"all tally ({len(TRANCHE_EXCEPTIONS)} excepted)")
 
 
 def check_nulls(cur):
@@ -471,6 +474,189 @@ def check_segment_consistency(cur):
             ok(g, t, "segment tagging consistent across years")
 
 
+def check_property_money(cur):
+    """Property money in _final must be SGD. H1 compares a property's purchase price with its
+    own valuation: both are S$ figures for the same asset, so they sit within a few times of
+    each other. A price left in a large-unit currency (JPY, IDR, KRW, VND, INR, CNY) is 5-12,000x
+    off. Revenue is not used: new acquisitions and vacant buildings have near-zero revenue.
+    An unconverted EUR/GBP/USD/AUD figure is only 1.3-1.8x off and cannot be seen here; the
+    purchase_price_currency tag audit covers those. H2 catches a year-on-year jump that only a
+    unit or FX error explains."""
+    g = "property_money"
+    if not table_exists(cur, "sgx_reit_property_final"):
+        add(FAIL, g, "sgx_reit_property_final", "table missing; run build_final_tables.py --write")
+        return
+    rows = q(cur, """select symbol, financial_year, property_name, market_valuation, purchase_price
+                     from sgx_reit_property_final
+                     where market_valuation > 0 and purchase_price > 0""")
+    bad = [(s, fy, pn, round(float(pp) / float(mv), 1)) for s, fy, pn, mv, pp in rows
+           if not 1 / 30 <= float(pp) / float(mv) <= 30]
+    if bad:
+        add(FAIL, g, "H1 purchase_price within 30x of market_valuation", f"{len(bad)} rows, e.g. {bad[:4]}")
+    else:
+        ok(g, "H1 purchase_price within 30x of market_valuation", f"{len(rows)} properties")
+    rows = q(cur, """select a.symbol, a.property_name, a.financial_year, a.market_valuation, b.market_valuation
+                     from sgx_reit_property_final a join sgx_reit_property_final b
+                       on a.symbol = b.symbol and a.property_name = b.property_name
+                      and b.financial_year = a.financial_year + 1
+                     where a.market_valuation > 0 and b.market_valuation > 0""")
+    jumps = [(s, pn, fy) for s, pn, fy, v1, v2 in rows
+             if max(float(v1), float(v2)) / min(float(v1), float(v2)) > 5]
+    if jumps:
+        add(FAIL, g, "H2 valuation YoY change <= 5x", f"{len(jumps)} pairs, e.g. {jumps[:4]}")
+    else:
+        ok(g, "H2 valuation YoY change <= 5x", f"{len(rows)} year pairs")
+
+
+STRATA_ROWS = [("P40U.SI", "Ngee Ann City Property"), ("P40U.SI", "Wisma Atria Property"),
+               ("T82U.SI", "Suntec City Office Towers")]
+
+
+def check_property_basis(cur):
+    """market_valuation and property NPI are stored at 100% of the asset, so the REIT's share is
+    value x ownership. A share-basis value cannot be detected from the data alone (valuations move
+    year to year), so these checks cover the known cases:
+      - strata rows: the REIT owns its units outright, so ownership must be 1
+      - JYEU Parkway Parade: a 10% equity stake; the report gives no property value, so null"""
+    g = "property_basis"
+    if not table_exists(cur, "sgx_reit_property_final"):
+        add(FAIL, g, "sgx_reit_property_final", "table missing; run build_final_tables.py --write")
+        return
+    bad = []
+    for sym, pn in STRATA_ROWS:
+        for fy, own in q(cur, """select financial_year, ownership from sgx_reit_property_final
+                                 where symbol=%s and property_name=%s""", (sym, pn)):
+            if own is None or abs(float(own) - 1) > 1e-6:
+                bad.append((sym, fy, pn, own))
+    if bad:
+        add(FAIL, g, "strata rows have ownership 1", f"{len(bad)} rows, e.g. {bad[:4]}")
+    else:
+        ok(g, "strata rows have ownership 1")
+    n = q(cur, """select count(*) from sgx_reit_property_final where symbol='JYEU.SI'
+                  and property_name ilike 'Parkway Parade%%' and market_valuation is not null""")[0][0]
+    if n:
+        add(FAIL, g, "JYEU Parkway Parade has no property valuation",
+            f"{n} rows hold the equity-stake value as market_valuation")
+    else:
+        ok(g, "JYEU Parkway Parade has no property valuation")
+
+
+# canonical country name -> ISO 3166-1 alpha-2, lowercase (the code flagcdn expects:
+# https://flagcdn.com/w40/<code>.png). One name, one code, so the frontend can show a flag.
+COUNTRY_CODE = {
+    "Australia": "au", "Belgium": "be", "Canada": "ca", "China": "cn", "Czech Republic": "cz",
+    "Denmark": "dk", "Finland": "fi", "France": "fr", "Germany": "de", "Hong Kong": "hk",
+    "India": "in", "Indonesia": "id", "Ireland": "ie", "Italy": "it", "Japan": "jp",
+    "Malaysia": "my", "Maldives": "mv", "Netherlands": "nl", "New Zealand": "nz",
+    "Philippines": "ph", "Poland": "pl", "Singapore": "sg", "Slovakia": "sk",
+    "South Korea": "kr", "Spain": "es", "Switzerland": "ch", "United Kingdom": "gb",
+    "United States": "us", "Vietnam": "vn",
+}
+
+
+# REIT-years whose tranches cannot add up to DPU yet, with the reason. Waivers key on
+# (group, check) and would hide every other failure of the same check, so the exceptions
+# live here instead.
+TRANCHE_EXCEPTIONS = {
+    ("A17U.SI", 2025): "H2 2025 tranche is paid in 2026, so only the FY2026 AR prints it",
+}
+
+
+def check_tranches_final(cur):
+    """Same check as in tallies, on _final where DPU is SGD dollars (D-6), so the tolerance
+    is 100x smaller."""
+    g = "tranches"
+    if not table_exists(cur, "sgx_reit_performance_final"):
+        add(FAIL, g, "sgx_reit_performance_final", "table missing; run build_final_tables.py --write")
+        return
+    off = []
+    for s, fy, dpu, rec in q(cur, """select symbol, financial_year, distribution_per_unit, distribution_record
+                                     from sgx_reit_performance_final"""):
+        if not rec or dpu is None or (s, fy) in TRANCHE_EXCEPTIONS:
+            continue
+        tot = sum(t["dpu"] for t in rec if t.get("dpu") is not None)
+        if abs(tot - float(dpu)) > 0.0002:
+            off.append((s, fy, round(tot, 6), float(dpu)))
+    if off:
+        add(FAIL, g, "sum(distribution_record.dpu) = dpu (final, SGD)",
+            f"{len(off)} rows: " + "; ".join(f"{s} FY{fy} record {a} vs dpu {b}" for s, fy, a, b in off[:6]))
+    else:
+        ok(g, "sum(distribution_record.dpu) = dpu (final, SGD)", f"{len(TRANCHE_EXCEPTIONS)} excepted")
+
+
+def check_rollforward_final(cur):
+    """closing = opening + income_for_year + other_additions - distribution_paid - amount_retained,
+    on _final, to S$1,000. other_additions is signed (D-10), so C2PU's rounding adjustment is
+    inside it. Rows missing a term are skipped; check_tallies covers the raw table."""
+    g = "rollforward_final"
+    if not table_exists(cur, "sgx_reit_performance_final"):
+        add(FAIL, g, "sgx_reit_performance_final", "table missing; run build_final_tables.py --write")
+        return
+    rows = q(cur, """select symbol, financial_year, distributable_income_opening, income_for_year,
+                            other_additions, distribution_paid, amount_retained, distributable_income_closing
+                     from sgx_reit_performance_final""")
+    off, checked = [], 0
+    for s, fy, o, i, a, p, r, c in rows:
+        if None in (o, i, p, c):
+            continue
+        checked += 1
+        calc = float(o) + float(i) + float(a or 0) - float(p) - float(r or 0)
+        if abs(calc - float(c)) > 1000:
+            off.append((s, fy, round(calc), float(c)))
+    if off:
+        add(FAIL, g, "distribution rollforward closes",
+            f"{len(off)} of {checked} rows: " +
+            "; ".join(f"{s} FY{fy} calc {a:,} vs closing {b:,.0f}" for s, fy, a, b in off[:5]))
+    else:
+        ok(g, "distribution rollforward closes", f"{checked} rows close")
+
+
+def check_countries(cur):
+    """Every country must be one canonical name that maps to one flag code."""
+    g = "countries"
+    if not (table_exists(cur, "sgx_reit_property_final") and table_exists(cur, "sgx_reit_performance_final")):
+        add(FAIL, g, "_final tables", "table missing; run build_final_tables.py --write")
+        return
+    bad = q(cur, """select country, count(*) from sgx_reit_property_final
+                    where country is not null and country <> ALL(%s) group by 1 order by 2 desc""",
+            (list(COUNTRY_CODE),))
+    if bad:
+        add(FAIL, g, "country in the canonical list", f"{len(bad)} values: {[(c, n) for c, n in bad]}")
+    else:
+        ok(g, "country in the canonical list", f"{len(COUNTRY_CODE)} names, each with a flag code")
+    # performance.properties_location holds the same names, so one flag lookup serves both
+    off = []
+    for sym, fy, locs in q(cur, """select symbol, financial_year, properties_location
+                                   from sgx_reit_performance_final where properties_location is not null"""):
+        bad_names = [x for x in locs if x not in COUNTRY_CODE]
+        if bad_names:
+            off.append((sym, fy, bad_names))
+    if off:
+        add(FAIL, g, "properties_location names are canonical", f"{len(off)} rows, e.g. {off[:4]}")
+    else:
+        ok(g, "properties_location names are canonical")
+
+
+def check_transactions(cur):
+    """D-9: transaction_price and basis_value are gross (before debt) and for the stake
+    transacted. A price for the stake against a 100% basis, or a net-of-debt price against a
+    gross basis, shows up as a ratio far from 1 (C38U ION Orchard sat at 0.29)."""
+    g = "transactions"
+    if not table_exists(cur, "sgx_reit_property_transaction_final"):
+        add(FAIL, g, "sgx_reit_property_transaction_final", "table missing; run build_final_tables.py --write")
+        return
+    rows = q(cur, """select symbol, financial_year, property_name, interest_pct,
+                            transaction_price, basis_value
+                     from sgx_reit_property_transaction_final
+                     where transaction_price > 0 and basis_value > 0""")
+    bad = [(s, fy, pn, round(float(p) / float(b), 2)) for s, fy, pn, ip, p, b in rows
+           if not 0.5 <= float(p) / float(b) <= 2]
+    if bad:
+        add(FAIL, g, "price within 0.5-2x of basis_value", f"{len(bad)} rows, e.g. {bad[:4]}")
+    else:
+        ok(g, "price within 0.5-2x of basis_value", f"{len(rows)} rows with both figures")
+
+
 GROUPS = {
     "scale": check_scale,
     "enums": check_enums,
@@ -483,6 +669,12 @@ GROUPS = {
     "coverage": check_coverage,
     "final_sync": check_final_sync,
     "segments": check_segment_consistency,
+    "property_money": check_property_money,
+    "property_basis": check_property_basis,
+    "transactions": check_transactions,
+    "countries": check_countries,
+    "tranches": check_tranches_final,
+    "rollforward_final": check_rollforward_final,
 }
 
 

@@ -149,12 +149,13 @@ create table sgx_reit_performance (
   financial_year              smallint,  -- src: AR
   portfolio_value          numeric,   -- src: AR — headlined portfolio valuation incl. JV
                                       -- proportionate interests (pinned definition)
-  properties_location      text,      -- src: AR
+  properties_location      text[],    -- src: AR — canonical country names, each with an
+                                      -- ISO 3166-1 alpha-2 code (see db_guard.COUNTRY_CODE)
   gross_revenue            numeric,   -- src: AR — verify vs sgx_company_report revenue;
                                       -- if identical, drop and fetch instead
   net_property_income      numeric,   -- src: AR — as reported
   net_distributable_income numeric,   -- src: AR — REIT-specific add (meeting)
-  dpu                      numeric,   -- src: AR — full-year, cents
+  dpu                      numeric,   -- src: AR — full-year, SGD dollars (same unit as NAV)
   distribution_record      jsonb,     -- src: AR — [{period, dpu, ex_date, pay_date}];
                                       -- captures the half-year (H1/H2) DPU split case
   number_of_unitholders    int,       -- src: AR
