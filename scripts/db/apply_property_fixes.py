@@ -49,9 +49,14 @@ def same(a, b):
     if isinstance(a, (list, dict)) or isinstance(b, (list, dict)):
         return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
     try:
-        return math.isclose(float(a), float(b), rel_tol=1e-9, abs_tol=0.5)
+        fa, fb = float(a), float(b)
     except (TypeError, ValueError):
         return str(a) == str(b)
+    # money columns carry cents of FX rounding, so 0.5 is noise there; on a small-magnitude
+    # column (interest_pct, ownership as a fraction) 0.5 would swallow the whole domain and
+    # make the CONFLICT check inert
+    abs_tol = 0.5 if max(abs(fa), abs(fb)) >= 1000 else 1e-9
+    return math.isclose(fa, fb, rel_tol=1e-9, abs_tol=abs_tol)
 
 
 def key_of(entry, key=None):
@@ -145,7 +150,7 @@ def main():
         elif col == "INSERT":
             cols = list(target)
             cur.execute(f"insert into {TABLE} ({', '.join(cols)}) values ({', '.join(['%s'] * len(cols))})",
-                        [target[c] for c in cols])
+                        [Json(target[c]) if isinstance(target[c], (list, dict)) else target[c] for c in cols])
         else:
             # jsonb columns (e.g. distribution_record) must go through Json(), or psycopg2
             # adapts a Python list to a Postgres array

@@ -12,6 +12,13 @@
 --   join pg_class c on c.oid = r.ev_class
 --   join pg_attribute a on a.attrelid = d.refobjid and a.attnum = d.refobjsubid
 --  where d.refobjid = 'sgx_reit_performance'::regclass and a.attname = 'properties_location';
+--
+-- 1b. Check the format too: this must also return 0 rows. Every non-null value has to be
+-- '[A, B]' with ', ' separators, or the conversion silently makes a one-element array.
+--
+-- select symbol, financial_year, properties_location from sgx_reit_performance
+--  where properties_location is not null
+--    and (properties_location !~ '^\[.*\]$' or btrim(properties_location, '[]') = '');
 
 begin;
 

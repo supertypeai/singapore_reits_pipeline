@@ -483,6 +483,9 @@ def check_property_money(cur):
     purchase_price_currency tag audit covers those. H2 catches a year-on-year jump that only a
     unit or FX error explains."""
     g = "property_money"
+    if not table_exists(cur, "sgx_reit_property_final"):
+        add(FAIL, g, "sgx_reit_property_final", "table missing; run build_final_tables.py --write")
+        return
     rows = q(cur, """select symbol, financial_year, property_name, market_valuation, purchase_price
                      from sgx_reit_property_final
                      where market_valuation > 0 and purchase_price > 0""")
@@ -516,6 +519,9 @@ def check_property_basis(cur):
       - strata rows: the REIT owns its units outright, so ownership must be 1
       - JYEU Parkway Parade: a 10% equity stake; the report gives no property value, so null"""
     g = "property_basis"
+    if not table_exists(cur, "sgx_reit_property_final"):
+        add(FAIL, g, "sgx_reit_property_final", "table missing; run build_final_tables.py --write")
+        return
     bad = []
     for sym, pn in STRATA_ROWS:
         for fy, own in q(cur, """select financial_year, ownership from sgx_reit_property_final
@@ -560,6 +566,9 @@ def check_tranches_final(cur):
     """Same check as in tallies, on _final where DPU is SGD dollars (D-6), so the tolerance
     is 100x smaller."""
     g = "tranches"
+    if not table_exists(cur, "sgx_reit_performance_final"):
+        add(FAIL, g, "sgx_reit_performance_final", "table missing; run build_final_tables.py --write")
+        return
     off = []
     for s, fy, dpu, rec in q(cur, """select symbol, financial_year, distribution_per_unit, distribution_record
                                      from sgx_reit_performance_final"""):
@@ -580,6 +589,9 @@ def check_rollforward_final(cur):
     on _final, to S$1,000. other_additions is signed (D-10), so C2PU's rounding adjustment is
     inside it. Rows missing a term are skipped; check_tallies covers the raw table."""
     g = "rollforward_final"
+    if not table_exists(cur, "sgx_reit_performance_final"):
+        add(FAIL, g, "sgx_reit_performance_final", "table missing; run build_final_tables.py --write")
+        return
     rows = q(cur, """select symbol, financial_year, distributable_income_opening, income_for_year,
                             other_additions, distribution_paid, amount_retained, distributable_income_closing
                      from sgx_reit_performance_final""")
@@ -602,6 +614,9 @@ def check_rollforward_final(cur):
 def check_countries(cur):
     """Every country must be one canonical name that maps to one flag code."""
     g = "countries"
+    if not (table_exists(cur, "sgx_reit_property_final") and table_exists(cur, "sgx_reit_performance_final")):
+        add(FAIL, g, "_final tables", "table missing; run build_final_tables.py --write")
+        return
     bad = q(cur, """select country, count(*) from sgx_reit_property_final
                     where country is not null and country <> ALL(%s) group by 1 order by 2 desc""",
             (list(COUNTRY_CODE),))
@@ -609,6 +624,17 @@ def check_countries(cur):
         add(FAIL, g, "country in the canonical list", f"{len(bad)} values: {[(c, n) for c, n in bad]}")
     else:
         ok(g, "country in the canonical list", f"{len(COUNTRY_CODE)} names, each with a flag code")
+    # performance.properties_location holds the same names, so one flag lookup serves both
+    off = []
+    for sym, fy, locs in q(cur, """select symbol, financial_year, properties_location
+                                   from sgx_reit_performance_final where properties_location is not null"""):
+        bad_names = [x for x in locs if x not in COUNTRY_CODE]
+        if bad_names:
+            off.append((sym, fy, bad_names))
+    if off:
+        add(FAIL, g, "properties_location names are canonical", f"{len(off)} rows, e.g. {off[:4]}")
+    else:
+        ok(g, "properties_location names are canonical")
 
 
 def check_transactions(cur):
@@ -616,6 +642,9 @@ def check_transactions(cur):
     transacted. A price for the stake against a 100% basis, or a net-of-debt price against a
     gross basis, shows up as a ratio far from 1 (C38U ION Orchard sat at 0.29)."""
     g = "transactions"
+    if not table_exists(cur, "sgx_reit_property_transaction_final"):
+        add(FAIL, g, "sgx_reit_property_transaction_final", "table missing; run build_final_tables.py --write")
+        return
     rows = q(cur, """select symbol, financial_year, property_name, interest_pct,
                             transaction_price, basis_value
                      from sgx_reit_property_transaction_final

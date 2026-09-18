@@ -38,9 +38,11 @@ def country(v):
     return None if v is None else _COUNTRY.get(v.strip(), v.strip())
 def loc_list(ploc):
     """properties_location: normalize_locations() cleans the names and returns '[A, B]';
-    _final and prod store a text[] so the frontend gets an array, not a string."""
+    _final and prod store a text[] so the frontend gets an array, not a string. The same
+    _COUNTRY map is applied as for property.country -- normalize_locations canonicalizes to
+    'Hong Kong SAR', which has no flag code, and the two tables must agree."""
     s = normalize_locations(ploc)
-    return None if not s else [x.strip() for x in s.strip('[]').split(',') if x.strip()]
+    return None if not s else [country(x) for x in s.strip('[]').split(',') if x.strip()]
 
 # ---- percentages ----
 # ONE convention, database-wide (2026-08-04): every column that expresses a PERCENTAGE is
