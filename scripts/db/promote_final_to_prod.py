@@ -492,7 +492,13 @@ def main():
                     # e.g. a timeout between DELETE and POST, which can leave the scope empty
                     print(f"    ERROR scope {scope}: {e!r}")
 
-    if not args.write:
+    if args.write:
+        print(
+            "\nNEXT STEP: refresh the materialized view, or prod keeps serving the old data:"
+            "\n    refresh materialized view public.sgx_reit_report;"
+            "\n(Supabase SQL editor. PostgREST cannot do this.)"
+        )
+    else:
         print("\n(DRY RUN — nothing written to prod. Re-run with --write to apply.)")
     dev.close()
 
